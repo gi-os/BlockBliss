@@ -1,0 +1,82 @@
+name: TestFlight
+
+# main only. Tests, then sign with fastlane match and upload to TestFlight, so every push
+# to main is a build on the phone. Without the signing secrets it still tests and compiles,
+# and says what is missing.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.github/workflows/check.yml'
+  # This app lives on TestFlight (it's a gift, not a store app), and TestFlight builds expire
+  # after 90 days — so main is rebuilt as-is on the 1st of every month and a fresh build is
+  # always on both phones.
+  schedule:
+    - cron: "17 9 1 * *"
+  workflow_dispatch:
+    inputs:
+      force_profiles:
+        description: "Remake provisioning profiles (after adding a capability)"
+        type: boolean
+        default: false
+
+# One upload at a time per repo; the build number is the run number.
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write   # the keepalive step below
+
+jobs:
+  ship:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+      MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_AUTH }}
+      BUILD_NUMBER: ${{ github.run_number }}
+      MATCH_FORCE: ${{ inputs.force_profiles }}
+    steps:
+      # GitHub disables scheduled workflows after 60 days without a commit, which would
+      # silently stop the monthly rebuild. Re-enabling on every run resets that clock.
+      - name: Keep the monthly schedule alive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/build.yml/enable" || true
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: bash ci/select-xcode.sh
+      - name: Generate project
+        run: brew install xcodegen >/dev/null && xcodegen generate
+      - name: Engine tests, solvability sim, simulator build
+        run: bash ci/test.sh
+
+      - name: Signing secrets present?
+        id: sec
+        run: |
+          missing=""
+          for v in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 MATCH_PASSWORD MATCH_GIT_BASIC_AUTHORIZATION; do
+            [ -n "${!v}" ] || missing="$missing $v"
+          done
+          if [ -z "$missing" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"
+          else echo "ok=false" >> "$GITHUB_OUTPUT"; echo "::warning::No TestFlight upload. Missing secrets:$missing"; fi
+
+      - uses: ruby/setup-ruby@v1
+        if: steps.sec.outputs.ok == 'true'
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - name: Ship to TestFlight
+        if: steps.sec.outputs.ok == 'true'
+        run: bundle exec fastlane ship
+
+      - name: Compile for device (unsigned, no secrets)
+        if: steps.sec.outputs.ok != 'true'
+        run: bash ci/build-unsigned.sh

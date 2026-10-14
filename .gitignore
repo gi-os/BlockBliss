@@ -1,0 +1,13 @@
+.build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+.swiftpm/
+.workflows/
+build/
+*.ipa
+*.dSYM.zip
+fastlane/report.xml
+fastlane/README.md
+.build-ui/
+BlockBliss.xcodeproj/
