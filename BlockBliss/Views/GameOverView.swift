@@ -204,7 +204,7 @@ struct GreenButtonStyle: ButtonStyle {
 // MARK: - Confetti
 
 /// One-shot confetti burst for a new best. Particles are deterministic functions of time, drawn in a
-/// single Canvas; the timeline pauses once they have all faded out.
+/// single Canvas; the timeline pauses after the last piece has faded out.
 private struct ConfettiView: View {
     @State private var start = Date()
     @State private var finished = false
@@ -246,7 +246,8 @@ private struct ConfettiView: View {
         .allowsHitTesting(false)
         .accessibilityHidden(true)
         .task {
-            try? await Task.sleep(for: .seconds(Self.duration))
+            // Pieces finish fading at about duration - 0.3 s plus up to 0.9 s of launch delay.
+            try? await Task.sleep(for: .seconds(Self.duration + 1.0))
             finished = true
         }
     }

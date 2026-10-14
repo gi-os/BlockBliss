@@ -67,7 +67,7 @@ final class SoundEngine {
 
     private let poolSize = 6
     /// Pause the engine after this long without a sound.
-    private let idleTimeout: TimeInterval = 30
+    private let idleTimeout: TimeInterval = 120
 
     private init() {
         registerObservers()
@@ -165,6 +165,9 @@ final class SoundEngine {
             node.stop()
             node.play()
         }
+        // Count the start itself as activity, so a stale timestamp can't pause the engine moments later
+        // (which would make the next pickup cold-start audio on the main thread mid-touch).
+        lastPlay = now
         startIdleMonitor()
         return true
     }
