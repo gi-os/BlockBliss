@@ -47,7 +47,7 @@ struct FairPlayView: View {
 
                 bullet("Trays are drawn from 41 piece orientations in 15 families. Small pieces such as dots, dominoes and little corners are common at first; squares, big corners and long bars become more common as the game goes on.")
                 bullet("Each candidate tray is checked by a solver. Only a tray with a proven way to place all three is dealt.")
-                bullet("Only two things look at your board: that check, and a small early-game preference for trays that allow a satisfying clear. The preference fades to zero as difficulty rises, and nothing ever picks a tray because it is harder on your board.")
+                bullet("Only two things look at your board: that check, and a helping hand that often deals sets which fit together into satisfying clears — sometimes a full board wipe. It is strongest early and fades out as difficulty rises, and nothing ever picks a set because it is harder on your board.")
                 bullet("If no drawn tray passes the check, an easier tray is used. Three single blocks always fit, so the game can never get stuck.")
                 bullet("Colours are random and have nothing to do with the shapes.")
             } header: {

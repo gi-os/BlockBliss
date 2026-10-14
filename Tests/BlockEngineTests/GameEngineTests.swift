@@ -395,11 +395,18 @@ final class GameEngineTests: XCTestCase {
     }
 
     func testCodableRoundTripMidGameResumesIdentically() throws {
+        // The save point must be mid-run, so take the first seed whose scripted run survives 45 moves
+        // (which seed that is depends on the generator version).
         var original = GameEngine(seed: 2025)
         var mover = Mover(seed: 9, seeksLines: true)
-        for _ in 0..<45 where !original.state.isGameOver {
-            let move = mover.next(original)!
-            original.place(trayIndex: move.trayIndex, at: move.origin)
+        for seed in UInt64(2025)...2064 {
+            original = GameEngine(seed: seed)
+            mover = Mover(seed: 9, seeksLines: true)
+            for _ in 0..<45 where !original.state.isGameOver {
+                let move = mover.next(original)!
+                original.place(trayIndex: move.trayIndex, at: move.origin)
+            }
+            if !original.state.isGameOver { break }
         }
         XCTAssertFalse(original.state.isGameOver)
         XCTAssertGreaterThan(original.state.round, 10, "the save point should be well into the run")

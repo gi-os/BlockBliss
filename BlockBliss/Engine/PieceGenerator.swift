@@ -18,7 +18,7 @@ public struct Deal: Sendable {
 /// the run's RNG streams. Nothing about the player's best score, history, play time or device can reach it.
 /// Every tray is dealt with a proof (witness) that all three pieces can be placed.
 public enum PieceGenerator {
-    public static let version = 1
+    public static let version = 2
 
     // MARK: Tuning
 
@@ -63,8 +63,16 @@ public enum PieceGenerator {
         static let easyPoolDraws = 48
         static let friendlyCandidates = 64
 
-        /// Probability of choosing the most helpful candidate instead of a random one: `scale * (1 - d)^2`.
-        static let helpScale = 0.7
+        /// Probability that a deal is a "helpful" pick (the candidate with the best whole-tray outcome on this
+        /// board) instead of a uniform one: 90% at the start, fading linearly to 0 at full difficulty. Help only
+        /// ever makes the board easier; the late game's challenge comes from the piece weights.
+        static let helpEarly = 0.9
+        static let helpLate = 0.0
+        static func helpChance(_ d: Double) -> Double { helpEarly - (helpEarly - helpLate) * d }
+        /// Extra "perfect fit" candidates built piece by piece on helpful deals.
+        static let chainCandidates = 10
+        /// Placements examined when scoring one candidate's whole-tray outcome.
+        static let outcomeNodeCap = 3_000
 
         static func candidateCount(_ d: Double) -> Int { Int((24 - 16 * d).rounded()) }
         static func maxHeavy(_ d: Double) -> Int { d < 0.25 ? 1 : (d < 0.9 ? 2 : 3) }
@@ -100,12 +108,15 @@ public enum PieceGenerator {
         var chosen: (tray: [Int], witness: Witness, level: Int)?
 
         // L0 (normal) and L1 (friendly redraw: easiest weights, relaxed duplicate rules, no helpfulness boost).
-        let useHelp = rng.nextUnit() < Tuning.helpScale * (1 - d) * (1 - d)
+        let useHelp = rng.nextUnit() < Tuning.helpChance(d)
         for level in 0...1 where chosen == nil {
-            let candidates = dealer.gatherCandidates(
+            var candidates = dealer.gatherCandidates(
                 d: level == 0 ? d : 0, relaxed: level == 1,
                 count: level == 0 ? Tuning.candidateCount(d) : Tuning.friendlyCandidates,
                 previous: previous, recency: recency, rng: &rng)
+            if level == 0 && useHelp {
+                candidates += dealer.chainCandidates(d: d, recency: recency, previous: previous, rng: &rng)
+            }
             if let pick = dealer.select(candidates, preferHelpful: level == 0 && useHelp, rng: &rng) {
                 chosen = (pick.tray, pick.witness, level)
             }
@@ -220,6 +231,8 @@ public enum PieceGenerator {
     private struct Candidate {
         let tray: [Int]
         let witness: Witness
+        /// Known outcome score from construction (chain candidates); 0 when unknown.
+        var hint = 0
     }
 
     private struct Dealer {
@@ -263,17 +276,39 @@ public enum PieceGenerator {
             return candidates
         }
 
-        /// Picks uniformly, or (when `preferHelpful`) the candidate that offers the most line clears, ties random.
+        /// Picks uniformly, or (when `preferHelpful`) the candidate with the best whole-tray outcome on this
+        /// board — a full board wipe beats everything, then most lines, then the emptiest board — ties random.
         func select(_ candidates: [Candidate], preferHelpful: Bool, rng: inout SeededRNG) -> Candidate? {
             guard !candidates.isEmpty else { return nil }
             var index = PieceGenerator.below(candidates.count, &rng)
             if preferHelpful {
-                let scores = candidates.map { PieceGenerator.helpfulness($0.tray, occupancy: occupancy) }
+                let scores = candidates.map { max($0.hint, PieceGenerator.outcomeScore($0.tray, occupancy: occupancy)) }
                 let best = scores.max()!
-                let ties = scores.indices.filter { scores[$0] >= best - 1e-9 }
+                let ties = scores.indices.filter { scores[$0] == best }
                 index = ties[PieceGenerator.below(ties.count, &rng)]
             }
             return candidates[index]
+        }
+
+        /// "Perfect fit" trays: each piece is drawn among shapes that can complete a row or column on the board
+        /// as it will be after the previous pieces, favouring placements that clear more and above all ones that
+        /// wipe the board. The construction itself is a solution, so these are always placeable.
+        mutating func chainCandidates(d: Double, recency: [Double], previous: [Int], rng: inout SeededRNG) -> [Candidate] {
+            let weights = PieceGenerator.poseWeights(d: d)
+            let base = (0..<PieceGenerator.catalogCount).map { weights[$0] * recency[$0] }
+            let previousKey = previous.sorted()
+            var result: [Candidate] = []
+            var seen: [[Int]] = []
+            for _ in 0..<Tuning.chainCandidates {
+                guard let built = PieceGenerator.buildChain(d: d, base: base, occupancy: occupancy, rng: &rng) else { continue }
+                let key = built.tray.sorted()
+                if key == previousKey || seen.contains(key) { continue }
+                seen.append(key)
+                if let proof = witness(for: built.tray, cap: Tuning.nodeCapPerCandidate) {
+                    result.append(Candidate(tray: built.tray, witness: proof, hint: built.score))
+                }
+            }
+            return result
         }
 
         mutating func easyPoolTray(rng: inout SeededRNG) -> Candidate? {
@@ -340,40 +375,112 @@ public enum PieceGenerator {
         return picks
     }
 
-    /// Depth-2 lookahead score in 0...1: how many lines the tray can clear on this board, in how many
-    /// steps, and how many of its pieces can clear something right now.
-    private static func helpfulness(_ tray: [Int], occupancy: UInt64) -> Double {
-        var best = 0            // lines * 8 + clearing steps
-        var piecesThatClear = 0
-        for i in 0..<3 {
-            let first = ShapeCatalog.placementSets[tray[i]].masks
-            var canClear = false
-            var a = 0
-            while a < first.count {
-                let m = first[a]
-                a += 1
-                if occupancy & m != 0 { continue }
-                let (board1, lines1) = BoardBits.clearFullLines(occupancy | m)
-                let gain1 = lines1 * 8 + (lines1 > 0 ? 1 : 0)
-                if lines1 > 0 { canClear = true }
-                best = max(best, gain1)
-                for j in 0..<3 where j != i {
-                    if j < i && tray[j] == tray[i] { continue }     // identical pieces are symmetric
-                    let second = ShapeCatalog.placementSets[tray[j]].masks
-                    var b = 0
-                    while b < second.count {
-                        let m2 = second[b]
-                        b += 1
-                        if board1 & m2 != 0 { continue }
-                        let lines2 = BoardBits.clearFullLines(board1 | m2).lines
-                        best = max(best, gain1 + lines2 * 8 + (lines2 > 0 ? 1 : 0))
+    /// Outcome score of one simulated sequence: a board wipe dominates, then lines cleared, then how empty
+    /// the board is afterwards.
+    private static func outcomeValue(wiped: Bool, lines: Int, board: UInt64) -> Int {
+        (wiped ? 10_000 : 0) + lines * 100 + (64 - board.nonzeroBitCount)
+    }
+
+    /// Best whole-tray outcome over every order and placement, explored clearing-moves-first within a node
+    /// budget (a heuristic score: it only steers which solvable tray a helpful deal offers).
+    static func outcomeScore(_ tray: [Int], occupancy: UInt64) -> Int {
+        var search = OutcomeSearch(tray: tray)
+        search.run(board: occupancy, remaining: 0b111, lines: 0, wiped: false)
+        return search.best
+    }
+
+    private struct OutcomeSearch {
+        let tray: [Int]
+        var best = 0
+        var nodes = 0
+
+        mutating func run(board: UInt64, remaining: Int, lines: Int, wiped: Bool) {
+            if remaining == 0 {
+                best = max(best, PieceGenerator.outcomeValue(wiped: wiped, lines: lines, board: board))
+                return
+            }
+            for i in 0..<3 where remaining & (1 << i) != 0 {
+                // Identical shapes are interchangeable: only expand the first one still remaining.
+                if (0..<i).contains(where: { remaining & (1 << $0) != 0 && tray[$0] == tray[i] }) { continue }
+                let masks = ShapeCatalog.placementSets[tray[i]].masks
+                for clearingPass in [true, false] {
+                    var k = 0
+                    while k < masks.count {
+                        let m = masks[k]
+                        k += 1
+                        if board & m != 0 { continue }
+                        let (next, cleared) = BoardBits.clearFullLines(board | m)
+                        if (cleared > 0) != clearingPass { continue }
+                        nodes += 1
+                        if nodes > Tuning.outcomeNodeCap { return }
+                        run(board: next, remaining: remaining & ~(1 << i), lines: lines + cleared,
+                            wiped: wiped || (cleared > 0 && next == 0))
+                        if best >= 10_000 { return }            // a wipe is as good as it gets
                     }
                 }
             }
-            if canClear { piecesThatClear += 1 }
         }
-        let lines = best >> 3, steps = best & 7
-        return 0.45 * Double(min(lines, 4)) / 4 + 0.25 * Double(min(steps, 2)) / 2 + 0.30 * Double(piecesThatClear) / 3
+    }
+
+    /// Builds one tray piece by piece. Each step looks at every shape allowed by the tray rules and every
+    /// placement of it that clears at least one line on the current simulated board, and draws one with
+    /// weight `poseWeight * (1 + lines^2)`, x40 if it wipes the board. Steps with no clearing option draw a
+    /// normal weighted piece and leave the simulated board as it is. Returns nil if no step could clear.
+    fileprivate static func buildChain(d: Double, base: [Double], occupancy: UInt64,
+                                       rng: inout SeededRNG) -> (tray: [Int], score: Int)? {
+        var board = occupancy
+        var tray: [Int] = []
+        var familyCount = [Int](repeating: 0, count: posesPerFamily.count)
+        var heavy = 0, square3 = 0, lines = 0
+        var wiped = false, clearedAny = false
+        let heavyLimit = Tuning.maxHeavy(d), square3Limit = Tuning.maxSquare3(d)
+
+        for _ in 0..<3 {
+            var allowed = [Double](repeating: 0, count: catalogCount)
+            for p in 0..<catalogCount {
+                var w = base[p]
+                if familyCount[familyOfShape[p]] >= 2 { w = 0 }
+                if cellsOfShape[p] >= Tuning.heavyCells && heavy >= heavyLimit { w = 0 }
+                if isSquare3[p] && square3 >= square3Limit { w = 0 }
+                allowed[p] = w
+            }
+            var options: [(shape: Int, board: UInt64, lines: Int)] = []
+            var optionWeights: [Double] = []
+            for p in 0..<catalogCount where allowed[p] > 0 {
+                let masks = ShapeCatalog.placementSets[p].masks
+                var k = 0
+                while k < masks.count {
+                    let m = masks[k]
+                    k += 1
+                    if board & m != 0 { continue }
+                    let (next, cleared) = BoardBits.clearFullLines(board | m)
+                    guard cleared > 0 else { continue }
+                    options.append((p, next, cleared))
+                    optionWeights.append(allowed[p] * Double(1 + cleared * cleared) * (next == 0 ? 40 : 1))
+                }
+            }
+            let pick: Int
+            if options.isEmpty {
+                pick = weightedPick(allowed, &rng)
+                guard allowed[pick] > 0 else { return nil }
+            } else {
+                let o = options[weightedPick(optionWeights, &rng)]
+                pick = o.shape
+                board = o.board
+                lines += o.lines
+                clearedAny = true
+                if o.board == 0 { wiped = true }
+            }
+            tray.append(pick)
+            familyCount[familyOfShape[pick]] += 1
+            if cellsOfShape[pick] >= Tuning.heavyCells { heavy += 1 }
+            if isSquare3[pick] { square3 += 1 }
+        }
+        guard clearedAny else { return nil }
+        // The simulated board only counts clearing steps, so the hint is a lower bound on the real outcome.
+        let score = wiped ? outcomeValue(wiped: true, lines: lines, board: 0) : lines * 100
+        shuffle(&tray, &rng)
+        return (tray, score)
     }
 
     #if DEBUG

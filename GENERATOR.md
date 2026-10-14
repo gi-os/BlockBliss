@@ -453,3 +453,19 @@ Everything else is as designed: K(d) = round(24-16d), pHelp = 0.7(1-d)², heavy 
 - `Solver.canPlaceAll`, 30,000 random 3-piece cases: p50 2 us, p99 16 us, worst 0.12 ms; all 729 heavy-piece trays on an empty board: worst 6 us.
 - Piece-family share and size by difficulty band (greedy): average cells/piece 3.82 (d<.25), 4.10, 4.32, 4.64 (d>=.75); heavy-piece share 17.1%, 25.2%, 30.8%, 39.9%; same pose twice in a tray 1.4-2.4% of deals.
 - A player who always finds a completing order never loses (every deal is solvable by construction), so the ramp "bites" through planning difficulty, not forced losses. Re-tune by shortening the progress anchors or raising the d=1 heavy weights; do not add board-aware selection.
+
+
+### v2 (2026-10-14) — more board wipes, from playtest feedback ("too hard to do a screen wipe, pieces feel too random")
+
+- **Help schedule:** `helpChance(d) = 0.9 - 0.9·d` (was `0.7·(1-d)²`), so about 54% of deals are help-picked at round 25 instead of about 25%.
+- **Perfect-fit chains:** on help deals, 10 extra candidates are built piece by piece (`buildChain`). Each piece is drawn among shapes that can complete a line on the simulated board, weighted `poseWeight·(1+lines²)`, and ×40 if that placement wipes the board. The family, heavy and 3x3 caps still apply. The construction is itself a solution, and every candidate is still proven with the solver.
+- **Whole-tray outcome scoring** (`outcomeScore`) replaces the old depth-2 `helpfulness`. It runs a DFS over every order and placement, trying clearing moves first, with a cap of 3,000 nodes. It ranks wipe > lines > emptier board.
+- **blocksim, greedy bot, 300 games, seed 7:**
+
+| | All Clears per game | rounds (mean / median / p90) | solvable |
+|---|---|---|---|
+| v1 | 0.26 | 123 / 103 / 225 | 100% |
+| v2 | 1.68 | 153 / 133 / 257 | 100% |
+
+All games still end.
+- `PieceGenerator.version` is now 2.
