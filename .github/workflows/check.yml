@@ -1,11 +1,11 @@
 name: Check
 
 # Compiles and tests without publishing anything. A push to main ships to TestFlight, so main is
-# a bad place to find out something doesn't compile: every other branch and every PR runs this.
+# a bad place to find out something doesn't compile: every other branch runs this.
+# Push runs show on a PR too, so there's no pull_request trigger (it would run everything twice).
 on:
   push:
     branches-ignore: [main]
-  pull_request:
   workflow_dispatch:
 
 concurrency:
