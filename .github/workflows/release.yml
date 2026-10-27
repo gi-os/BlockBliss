@@ -1,0 +1,29 @@
+name: App Store
+
+# Run by hand. "release" uploads the store text (fastlane/metadata), screenshots and App Review
+# details and attaches the newest TestFlight build of this version, or with "submit" sends it to
+# App Review. "attach" only attaches the build.
+on:
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: "What to do"
+        type: choice
+        options: [release, attach]
+        default: release
+      submit:
+        description: "Submit for review"
+        type: boolean
+        default: false
+
+concurrency:
+  group: appstore
+  cancel-in-progress: false
+
+jobs:
+  appstore:
+    uses: gi-os/.github/.github/workflows/ios-appstore.yml@main
+    with:
+      lane: ${{ inputs.lane }}
+      submit: ${{ inputs.submit }}
+    secrets: inherit
