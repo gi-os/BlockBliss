@@ -11,3 +11,7 @@ fastlane/report.xml
 fastlane/README.md
 .build-ui/
 BlockBliss.xcodeproj/
+# the shared kit (gi-os/.github), fetched by CI and by .claude/hooks/session-start.sh
+.gios/
+.claude/skills/gios-*/
+.claude/settings.local.json
